@@ -83,6 +83,7 @@ import {
   serveStaticMiddleware,
 } from './middlewares/static'
 import { timeMiddleware } from './middlewares/time'
+import { openInEditorGuardMiddleware } from './middlewares/openInEditor'
 import { ModuleGraph } from './mixedModuleGraph'
 import type { ModuleNode } from './mixedModuleGraph'
 import { notFoundMiddleware } from './middlewares/notFound'
@@ -906,6 +907,7 @@ export async function _createServer(
   }
 
   // open in editor support
+  middlewares.use('/__open-in-editor', openInEditorGuardMiddleware())
   middlewares.use('/__open-in-editor', launchEditorMiddleware())
 
   // ping request handler
