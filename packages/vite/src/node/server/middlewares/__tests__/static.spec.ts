@@ -1,5 +1,15 @@
-import { describe, expect, test } from 'vitest'
-import { isUriInFilePath } from '../static'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { beforeAll, describe, expect, test } from 'vitest'
+import type { ResolvedConfig } from '../../../config'
+import { resolveConfig } from '../../../config'
+import { normalizePath } from '../../../utils'
+import { isWindows } from '../../../../shared/utils'
+import {
+  isFileLoadingAllowed,
+  isUriInFilePath,
+  looksLikeWindowsShortNamePath,
+} from '../static'
 
 describe('isUriInFilePath', () => {
   const cases = {
@@ -26,4 +36,79 @@ describe('isUriInFilePath', () => {
       })
     }
   }
+})
+
+describe('looksLikeWindowsShortNamePath', () => {
+  const shortNamePaths = [
+    // classic 8.3 short names
+    'C:/PROGRA~1/x',
+    'C:/PROGRA~1',
+    'C:/LONGFI~1.TXT',
+    'C:/MICROS~2/foo',
+    // short-name-looking directory ancestor, not just the basename
+    'C:/foo/DOCUME~1/bar.js',
+  ]
+  const legitimateTildePaths = [
+    // real-world case from the reported issue: `~` not followed by a digit
+    'C:/project/dist/0~rslib-runtime.js',
+    // ancestor directory containing a tilde that isn't short-name shaped
+    'C:/Users/foo~bar/project/index.js',
+    // tilde-prefixed name with no short-name-style prefix/digit suffix
+    'C:/Users/foo/~backup/index.js',
+    // prefix longer than the 6 characters a short name can have
+    'C:/project/confirmations~2/index.js',
+    // no tilde at all
+    'C:/Users/foo/project/index.js',
+  ]
+
+  for (const filePath of shortNamePaths) {
+    test(`looksLikeWindowsShortNamePath("${filePath}") is true`, () => {
+      expect(looksLikeWindowsShortNamePath(filePath)).toBe(true)
+    })
+  }
+  for (const filePath of legitimateTildePaths) {
+    test(`looksLikeWindowsShortNamePath("${filePath}") is false`, () => {
+      expect(looksLikeWindowsShortNamePath(filePath)).toBe(false)
+    })
+  }
+})
+
+describe('isFileLoadingAllowed', () => {
+  const root = normalizePath(path.dirname(fileURLToPath(import.meta.url)))
+  let config: ResolvedConfig
+
+  beforeAll(async () => {
+    config = await resolveConfig(
+      {
+        root,
+        configFile: false,
+        logLevel: 'silent',
+        server: { fs: { allow: [root] } },
+      },
+      'serve',
+    )
+  })
+
+  test('allows files inside fs.allow', () => {
+    expect(isFileLoadingAllowed(config, `${root}/foo.js`)).toBe(true)
+    expect(isFileLoadingAllowed(config, `${root}/0~rslib-runtime.js`)).toBe(
+      true,
+    )
+  })
+
+  test('denies files matching fs.deny', () => {
+    expect(isFileLoadingAllowed(config, `${root}/.env`)).toBe(false)
+  })
+
+  test('denies NTFS alternate data stream paths', () => {
+    // `.env::$DATA` resolves to the same content as `.env` on NTFS
+    expect(isFileLoadingAllowed(config, `${root}/.env::$DATA`)).toBe(false)
+    expect(isFileLoadingAllowed(config, `${root}/foo.js::$DATA`)).toBe(false)
+  })
+
+  test.runIf(isWindows)('denies Windows 8.3 short name paths', () => {
+    // `ENV~1` can be the 8.3 short name alias of `.env`
+    expect(isFileLoadingAllowed(config, `${root}/ENV~1`)).toBe(false)
+    expect(isFileLoadingAllowed(config, `${root}/PROGRA~1/foo.js`)).toBe(false)
+  })
 })
