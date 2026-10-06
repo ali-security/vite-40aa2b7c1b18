@@ -1,6 +1,7 @@
 import net from 'node:net'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { setTimeout } from 'node:timers/promises'
 import http from 'node:http'
 import {
   afterEach,
@@ -546,6 +547,72 @@ describe.runIf(isServe)('invalid request', () => {
   test('should deny request to HTML file outside root by default with relative path', async () => {
     const response = await sendRawRequest(viteTestUrl, '/../unsafe.html')
     expect(response).toContain('HTTP/1.1 403 Forbidden')
+  })
+})
+
+describe.runIf(isServe)('fetchModule via WebSocket', () => {
+  const root = path.resolve(
+    __dirname.replace('playground', 'playground-temp'),
+    '..',
+  )
+
+  const fetchModuleViaWebSocket = async (filePath: string) => {
+    const resolvedPath = path.resolve(root, filePath)
+    const token = viteServer.config.webSocketToken
+    const wsUrl = viteTestUrl.replace('http', 'ws')
+    const ws = new WebSocket(`${wsUrl}?token=${token}`, ['vite-hmr'])
+
+    try {
+      return await Promise.race([
+        new Promise<any>((resolve, reject) => {
+          ws.on('open', () => {
+            ws.send(
+              JSON.stringify({
+                type: 'custom',
+                event: 'vite:invoke',
+                data: {
+                  name: 'fetchModule',
+                  id: 'send:1',
+                  data: [pathToFileURL(resolvedPath).href],
+                },
+              }),
+            )
+          })
+
+          ws.on('message', (raw: Buffer) => {
+            const parsed = JSON.parse(raw.toString())
+            if (
+              parsed.type === 'custom' &&
+              parsed.event === 'vite:invoke' &&
+              parsed.data?.id === 'response:1'
+            ) {
+              resolve(parsed.data.data)
+            }
+          })
+
+          ws.on('error', (err) => {
+            reject(err)
+          })
+        }),
+        setTimeout(10_000).then(() =>
+          Promise.reject(new Error('WebSocket response timed out')),
+        ),
+      ])
+    } finally {
+      ws.close()
+    }
+  }
+
+  test('should not read files inside allowed directories as fetchModule is disabled', async () => {
+    const result = await fetchModuleViaWebSocket('root/src/safe.txt?raw')
+    expect(result.result).toBeUndefined()
+    expect(result.error).toBeTruthy()
+  })
+
+  test('should not read files outside allowed directories', async () => {
+    const result = await fetchModuleViaWebSocket('root/unsafe.txt?raw')
+    expect(result.result).toBeUndefined()
+    expect(result.error).toBeTruthy()
   })
 })
 
